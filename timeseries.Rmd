@@ -1,0 +1,287 @@
+---
+title: "House Hold Energy Data - Time Series"
+author: "</br> Shubham Mishra (19300)"
+date: '2022-08-27'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+[House Hold Energy Data - Time Series](https://www.kaggle.com/datasets/jaganadhg/house-hold-energy-data)
+
+# About Dataset
+
+## Introduction
+This data was collected for an apartment unit in San Jose for one plus year. The data is collected with smart meters and shared by the energy company. This is time-series data by nature and can be used for various time-series Machine Learning experiments.
+
+## Description of Data
+
+The data contains eight attributes.
+
+TYPE - This is an information column. The value is 'Electric usage' for all the observations.
+<br> DATE - Date of electric consumption. There is no timestamp in this field.
+<br> START TIME - Start time of the consumption.
+<br> END TIME - End time of the consumption
+<br> USAGE - Consumption in kWh
+<br> UNITS - This column denotes measurement unit. It is kWh for all the observations. 
+<br> COST - Cost of consumption in $.
+<br> NOTES - Mostly an empty column.
+
+## PRE-PROCESSING DATA
+
+### Reading the data
+```{r, message=FALSE}
+library(stringr)
+library(ggplot2)
+library(ggthemes)
+library(dplyr)
+library(urca)
+library(tseries)
+library(fpp2)
+library(forecast)
+options(warn=-1)
+```
+
+```{r}
+data<-read.csv("/Users/shubhammishra/Desktop/VII Semester/ECO619- Time Series Analysis and Forecasting/Assignment/Data/archive/D202.csv")
+```
+
+
+### Sub-setting rows
+```{r}
+data$COST<-as.numeric(gsub("$", "",as.character(data$COST), fixed = T))
+data$year <- gsub("/", "",as.character(data$DATE), fixed = T)
+data$year <- str_sub(data$year,-4)
+data<-subset(data, year == '2017')
+```
+
+### Sub-setting column
+```{r}
+data$time<-as.character(paste(data$DATE, data$START.TIME))
+data <- data[!names(data) %in% c("year", "TYPE", "DATE", "START.TIME", "END.TIME", "UNITS", "NOTES")]
+colnames(data)<-c("use","cost","time")
+data <- data %>% select("time",everything())
+```
+
+### Data reduction row-wise - 1 minute data 
+```{r}
+Nth.ddatate<-function(dataframe, n)dataframe[-(seq(n,to=nrow(dataframe),by=n)),]
+i <- 4
+dummy<-data
+while(i >= 2){
+  dummy<-Nth.ddatate(dummy, i)
+  i <- i - 1
+}
+i <- 4
+data<-data %>%
+  group_by(time = gl(ceiling(nrow(data)/i), i, nrow(data))) %>%
+  summarise_each(funs(sum))
+data$time<-dummy$time
+```
+
+### Keeping only the imp object in the environment
+```{r}
+rm(list = setdiff(ls(), c("data")))
+```
+
+### Summary
+```{r}
+summary(data)
+str(data)
+```
+
+## WORKING DATA FOR ANALYSIS
+```{r}
+df<-data
+```
+
+### Time-series plot for the data
+```{r}
+ggplot()+
+  geom_line(data=df, aes(x = time, y = use, group=1)) + ylab('Usage')+xlab('Time index') + theme_clean()
+
+```
+
+### Apply time series function, with monthly(8760/12) freq
+```{r}
+count_ma<-ts(df$use,frequency = 8760/12)
+```
+
+### Periodic decomposition
+```{r}
+decomp<-stl(count_ma,"periodic")
+```
+
+### Seasonally adjust the decomposition
+```{r}
+deseasonal_cnt<-seasadj(decomp)  #Returns seasonally adjusted data constructed by removing the seasonal component
+```
+
+
+### Plotting  
+```{r}
+plot(decomp) #seasonality visible
+```
+
+### Testing for stationarity
+```{r}
+plot(df$use, type='l')   #visual check for stationary variance
+adf.test(count_ma, alternative = 'stationary')   #adf test
+```
+
+#### adf test shows stationarity at 1% significance level
+
+### Auto correlations 
+```{r}
+Acf(count_ma, main='', lag.max = 30)  #corr btw the time-series and its lag
+Pacf(count_ma, main='', lag.max = 30)  #corr btw the time-series and its lag using partial autocorrelation function
+```
+
+### Taking into seasonal difference, and rechecking
+#### Re-testing for stationarity
+```{r}
+ss <- 1  #difference counter
+count_d1 <- diff(deseasonal_cnt, differences = ss)
+plot(count_d1)  #visual check
+adf.test(count_d1, alternative = "stationary")  #adf test
+```
+
+#### adf test shows stationarity at 1% significance level
+
+#### Re-testing auto correlations
+```{r}
+Acf(count_d1, main='', lag.max = 30)  #corr btw the time-series and its lag
+Pacf(count_d1, main='', lag.max = 30)  #corr btw the time-series and its lag using partial autocorrelation function
+```
+
+## MODEL FITTING
+### Fitting ARIMA model
+```{r}
+fit1 <- auto.arima(deseasonal_cnt, seasonal = FALSE)  #auto mode gives the most like version for arima
+fit1   #gives ARIMA(0,1,1)
+tsdisplay(residuals(fit1), lag.max = 30, main = 'Model Residuals from ARIMA(0,1,1)')  #checking the residuals
+```
+
+### Trying other fittings
+```{r}
+fit2 <- arima(deseasonal_cnt, order=c(2,0,24)) # from previous plot - experimental values
+fit2  #is the AIC lower?
+tsdisplay(residuals(fit2), lag.max = 30, main = 'Model Residuals from ARIMA(2,0,24)')
+```
+
+## FORECASTING
+
+### Predicting new future values after 8760 obs
+```{r}
+autoplot(forecast(fit1)) 
+```
+
+### Predict from data point 8000 to 8760 over the test data
+```{r}
+hold<-window(ts(deseasonal_cnt),start(8000))
+mod_fit<- arima(ts(deseasonal_cnt[-c(8000:8760)]), order = c(2,0,24))
+ff<-forecast(mod_fit, h=759)
+plot(ff, main="") #plotting the forecast
+lines(ts(deseasonal_cnt)) #actual value over the forecast values
+```
+
+### Bringing back seasonality and again forecasting
+#### Again fitting arima model with seasonality
+```{r}
+sfit1 <- auto.arima(deseasonal_cnt, seasonal = TRUE)
+tsdisplay(residuals(sfit1), lag.max = 30, main = 'Residuals from auto ARIMA with seasonality')
+```
+
+#### Forecasting with seasonality 
+```{r}
+sff<-forecast(sfit1, h=760)
+plot(sff, main="Auto Arima with seasonality")
+lines(ts(deseasonal_cnt))
+```
+
+## Accuracy Testing with selected models
+
+
+### Compiling different fit models
+#### Fitting auto ARIMA with seasonality
+```{r}
+sfit1 <- auto.arima(deseasonal_cnt, seasonal = TRUE)
+tsdisplay(residuals(sfit1), lag.max = 30, main = 'Model Residuals from auto ARIMA with seasonality')
+```
+
+#### Fitting auto ARIMA withot seasonality
+```{r}
+fit1 <- auto.arima(deseasonal_cnt, seasonal = FALSE)
+tsdisplay(residuals(fit1), lag.max = 30, main = 'Model Residuals from ARIMA(0,1,1)')
+```
+
+#### Fitting arima(2,0,24)
+```{r}
+fit2 <- arima(deseasonal_cnt, order=c(2,0,24))
+tsdisplay(residuals(fit2), lag.max = 30, main = 'Model Residuals from ARIMA(2,0,24)')
+```
+
+#### Fitting arima(1,1,1)
+```{r}
+fit3 <- arima(deseasonal_cnt, order=c(1,1,1))
+tsdisplay(residuals(fit2), lag.max = 30, main = 'Model Residuals from ARIMA(1,1,1)')
+```
+
+#### Fitting ETS (error, trend, seasonality) model
+```{r}
+fit10 <- ets(df$use)  #ETS model of the original data
+plot(fit10)
+tsdisplay(residuals(fit10), lag.max = 30, main = 'ETS model')
+```
+
+#### Visual accuracy, forecasting different fit models together
+```{r}
+par(mfrow=c(2,3))
+```
+
+### Auto ARIMA with seasonality
+```{r}
+sff1<-forecast(sfit1, h=760)
+plot(sff1)
+lines(ts(deseasonal_cnt))
+```
+
+### Auto ARIMA without seasonality
+```{r}
+ff1<-forecast(fit1, h=760)
+plot(ff1)
+lines(ts(deseasonal_cnt))
+```
+
+### ARIMA(2,0,24)
+```{r}
+ff2<-forecast(fit2, h=760)
+plot(ff2)
+lines(ts(deseasonal_cnt))
+```
+
+### ARIMA(1,1,1)
+```{r}
+ff3<-forecast(fit3, h=760)
+plot(ff3)
+lines(ts(deseasonal_cnt))
+```
+
+### ETS model
+```{r}
+ff10<-forecast(fit10, h=760)
+plot(ff10)
+lines(ts(deseasonal_cnt))
+```
+
+### Accuracy checking --> lower the MAPE (mean absolute percentage error) value better the accuracy
+```{r}
+accuracy(sfit1)  #auto arima with seasonality
+accuracy(fit1)   #auto arima without seasonality
+accuracy(fit2)   #arima(2,0,24)
+accuracy(fit3)   #arima(1,1,1)
+accuracy(fit10)  #ets model
+```
+
